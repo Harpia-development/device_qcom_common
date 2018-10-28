@@ -23,7 +23,7 @@ import re
 bootImages = {}
 binImages = {}
 fwImages = {}
-imgImages = {}
+
 
 # Parse filesmap file containing firmware residing places
 def LoadFilesMap(zip, name="RADIO/filesmap"):
@@ -55,6 +55,14 @@ def GetRadioFiles(z):
         continue
       data = z.read(f)
       out[fn] = common.File(f, data)
+
+    # This is to include vbmeta,dtbo images from IMAGES/ folder.
+    if f.startswith("IMAGES/") and (f.__len__() > len("IMAGES/")):
+      if ("vbmeta" in f or "dtbo" in f):
+        fn = f[7:]
+        data = z.read(f)
+        out[fn] = common.File(f, data)
+
   return out
 
 
@@ -74,6 +82,8 @@ def GetFileDestination(fn, filesmap):
   if fn not in filesmap:
     fn = fn.split(".")[0] + ".*"
     if fn not in filesmap:
+      if ("vbmeta" in fn or "dtbo" in fn):
+        raise common.ExternalError("Filesmap entry for vbmeta or dtbo missing !!")
       print "warning radio-update: '%s' not found in filesmap" % (fn)
       return None, backup
   return filesmap[fn], backup
@@ -84,7 +94,6 @@ def SplitFwTypes(files):
   boot = {}
   bin = {}
   fw = {}
-  img = {}
 
   for f in files:
     extIdx = -1
@@ -94,15 +103,13 @@ def SplitFwTypes(files):
         break
       extIdx -= 1
 
-    if dotSeparated[extIdx] == 'mbn' or dotSeparated[extIdx] == 'elf':
+    if dotSeparated[extIdx] == 'mbn' or dotSeparated[extIdx] == 'elf' or  dotSeparated[extIdx] == 'img':
       boot[f] = files[f]
     elif dotSeparated[extIdx] == 'bin':
       bin[f] = files[f]
-    elif dotSeparated[extIdx] == 'img':
-      img[f] = files[f]
     else:
       fw[f] = files[f]
-  return boot, bin, fw, img
+  return boot, bin, fw
 
 
 # Prepare radio-update files and verify them
@@ -167,8 +174,7 @@ def OTA_VerifyEnd(info, api_version, target_zip, source_zip=None):
   global bootImages
   global binImages
   global fwImages
-  global imgImages
-  bootImages, binImages, fwImages, imgImages = SplitFwTypes(update_list)
+  bootImages, binImages, fwImages = SplitFwTypes(update_list)
 
   # If there are incremental patches verify them
   if largest_source_size != 0:
@@ -192,6 +198,7 @@ def OTA_VerifyEnd(info, api_version, target_zip, source_zip=None):
         continue
       info.script.PatchCheck("EMMC:%s:%d:%s:%d:%s" %
               (dest, sf.size, sf.sha1, tf.size, tf.sha1))
+
     last_mounted = ""
     for f in fwImages:
       dest, destBak, tf, sf = fwImages[f]
@@ -213,14 +220,6 @@ def OTA_VerifyEnd(info, api_version, target_zip, source_zip=None):
       else:
         dest = dest + "/" + f
       info.script.PatchCheck(dest, tf.sha1, sf.sha1)
-    for f in imgImages:
-      dest, tf, sf = imgImages[f]
-      # Not incremental
-      if sf is None:
-        continue
-      info.script.PatchCheck("EMMC:%s:%d:%s:%d:%s" %
-              (dest, sf.size, sf.sha1, tf.size, tf.sha1))
-    last_mounted = ""
 
     info.script.CacheFreeSpaceCheck(largest_source_size)
   return True
@@ -329,14 +328,6 @@ def InstallFwImages(script, files):
     script.AppendExtra('unmount("/firmware");')
   return
 
-# This function handles *.img images
-def InstallImgImages(script, files):
-  for f in files:
-    dest, _, tf, sf = files[f]
-    InstallRawImage(script, f, dest, tf, sf)
-  return
-
-
 def OTA_InstallEnd(info):
   print "Applying radio-update script modifications..."
   info.script.Comment("---- radio update tasks ----")
@@ -348,8 +339,6 @@ def OTA_InstallEnd(info):
     InstallBinImages(info.script, binImages)
   if fwImages != {}:
     InstallFwImages(info.script, fwImages)
-  if imgImages != {}:
-    InstallImgImages(info.script, imgImages)
   return
 
 
